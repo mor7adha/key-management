@@ -5,7 +5,7 @@ const seed = {
   users: [{ id: 'u1', name: 'مدير النظام', username: 'admin', password: 'admin123', role: 'admin', active: true }],
   subscriptions: [], debts: [], payables: [], notifications: [], activities: [],
   registrationRequests: [], rates: { USD: 530, SAR: 139.7, YER: 1 },
-  dismissedNotificationIds: [], defaultDataRemoved: true
+  dismissedNotificationIds: [], defaultDataRemoved: true, _revision: 0, _updatedAt: null
 };
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
@@ -28,6 +28,16 @@ async function getDatabase() {
   return structuredClone(seed);
 }
 
+async function safeWrite(current, next) {
+  const store = databaseStore();
+  const revision = Number(current?._revision) || 0;
+  await store.setJSON(`backup-${revision % 10}`, current || seed);
+  next._revision = revision + 1;
+  next._updatedAt = new Date().toISOString();
+  await store.setJSON('database', next);
+  return next;
+}
+
 async function authenticate(token, db) {
   if (!token) return null;
   const session = await sessionStore().get(token, { type: 'json' });
@@ -36,10 +46,22 @@ async function authenticate(token, db) {
 }
 
 export default async function handler(request) {
-  if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
   try {
-    const body = await request.json();
     const db = await getDatabase();
+    if (request.method === 'GET') return json({
+      ok: true,
+      storage: 'netlify-blobs',
+      revision: db._revision || 0,
+      updatedAt: db._updatedAt || null,
+      counts: {
+        subscriptions: db.subscriptions?.length || 0,
+        debts: db.debts?.length || 0,
+        payables: db.payables?.length || 0,
+        users: db.users?.length || 0
+      }
+    });
+    if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+    const body = await request.json();
 
     if (body.action === 'login') {
       const user = db.users.find(item => item.username === body.username && item.password === body.password && item.active);
@@ -61,7 +83,7 @@ export default async function handler(request) {
         body: `${requestData.name} يطلب إنشاء الحساب @${requestData.username}`,
         date: new Date().toISOString(), read: false
       });
-      await databaseStore().setJSON('database', db);
+      await safeWrite(db, db);
       return json({ ok: true });
     }
 
@@ -91,8 +113,15 @@ export default async function handler(request) {
       } else {
         nextDatabase.users = mergeRecords(db.users, nextDatabase.users);
       }
-      await databaseStore().setJSON('database', nextDatabase);
-      return json({ ok: true });
+      const saved = await safeWrite(db, nextDatabase);
+      return json({ ok: true, revision: saved._revision, updatedAt: saved._updatedAt });
+    }
+    if (body.action === 'restore' && user.role === 'admin') {
+      const slot = Math.max(0, Math.min(9, Number(body.slot) || 0));
+      const backup = await databaseStore().get(`backup-${slot}`, { type: 'json' });
+      if (!backup) return json({ error: 'لا توجد نسخة احتياطية في هذا الموضع' }, 404);
+      const restored = await safeWrite(db, backup);
+      return json({ ok: true, db: restored, revision: restored._revision });
     }
     if (body.action === 'logout') {
       await sessionStore().delete(body.token);
