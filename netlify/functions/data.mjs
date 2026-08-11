@@ -16,6 +16,10 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
 const databaseStore = () => getStore({ name: 'keycode-data', consistency: 'strong' });
 const sessionStore = () => getStore({ name: 'keycode-sessions', consistency: 'strong' });
 
+function mergeRecords(current = [], incoming = []) {
+  return [...new Map([...current, ...incoming].filter(Boolean).map(item => [item.id, item])).values()];
+}
+
 async function getDatabase() {
   const store = databaseStore();
   const data = await store.get('database', { type: 'json' });
@@ -70,9 +74,22 @@ export default async function handler(request) {
       const actingUser = body.db.users?.find(item => item.id === user.id && item.active);
       if (!actingUser) return json({ error: 'لا يمكن تعطيل الحساب المستخدم' }, 403);
       const nextDatabase = structuredClone(body.db);
+      // A delayed browser response may contain only an older subset. Merge all
+      // durable records by id so an incomplete snapshot can never erase newer data.
+      for (const collection of ['subscriptions', 'debts', 'payables', 'activities', 'notifications', 'registrationRequests']) {
+        nextDatabase[collection] = mergeRecords(db[collection], nextDatabase[collection]);
+      }
+      nextDatabase.dismissedNotificationIds = [...new Set([
+        ...(db.dismissedNotificationIds || []),
+        ...(nextDatabase.dismissedNotificationIds || [])
+      ])];
+      const dismissed = new Set(nextDatabase.dismissedNotificationIds);
+      nextDatabase.notifications = nextDatabase.notifications.filter(item => !dismissed.has(item.id));
       if (user.role !== 'admin') {
         nextDatabase.users = db.users;
         nextDatabase.registrationRequests = db.registrationRequests;
+      } else {
+        nextDatabase.users = mergeRecords(db.users, nextDatabase.users);
       }
       await databaseStore().setJSON('database', nextDatabase);
       return json({ ok: true });
