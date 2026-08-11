@@ -1,5 +1,5 @@
 .DS_Store
 Thumbs.db
 .netlify/
+node_modules/
 *.log
-
