@@ -45,7 +45,7 @@ function tokenUserId(request) {
 }
 
 function initialDatabase() {
-  return { users:[DEFAULT_ADMIN], subscriptions:[], debts:[], payables:[], notifications:[], activities:[], registrationRequests:[], rates:{USD:530,SAR:139.7,YER:1}, currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"}, baseCurrency:"YER", workspaceRates:{u1:{USD:530,SAR:139.7,YER:1}}, workspaceSettings:{u1:{baseCurrency:"YER",currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"}}}, dismissedNotificationIds:[], dismissedByWorkspace:{u1:[]}, defaultDataRemoved:true };
+  return { users:[DEFAULT_ADMIN], subscriptions:[], debts:[], payables:[], notifications:[], activities:[], registrationRequests:[], rates:{USD:530,SAR:139.7,YER:1}, currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"}, baseCurrency:"YER", workspaceRates:{u1:{USD:530,SAR:139.7,YER:1}}, workspaceSettings:{u1:{baseCurrency:"YER",availableCurrencies:["YER","USD","SAR"],currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"}}}, dismissedNotificationIds:[], dismissedByWorkspace:{u1:[]}, defaultDataRemoved:true };
 }
 
 async function readDatabase() {
@@ -67,7 +67,7 @@ function normalizeDatabase(source) {
   database.workspaceRates ||= { u1:database.rates };
   database.currencyNames ||= { YER:"ريال يمني", USD:"دولار أمريكي", SAR:"ريال سعودي" };
   database.baseCurrency ||= "YER";
-  database.workspaceSettings ||= { u1:{ baseCurrency:database.baseCurrency, currencyNames:database.currencyNames } };
+  database.workspaceSettings ||= { u1:{ baseCurrency:database.baseCurrency, availableCurrencies:["YER","USD","SAR"], currencyNames:database.currencyNames } };
   database.dismissedNotificationIds ||= [];
   database.dismissedByWorkspace ||= { u1:database.dismissedNotificationIds };
   return database;
@@ -75,13 +75,16 @@ function normalizeDatabase(source) {
 
 function scopedDatabase(database, user) {
   const workspaceId = user.workspaceId || user.id;
+  const settingsId = user.id;
   const scoped = { ...database };
   scoped.users = user.id === "u1" ? database.users : database.users.filter(item => item.workspaceId === workspaceId);
   for (const key of WORKSPACE_COLLECTIONS) scoped[key] = database[key].filter(item => item.ownerId === workspaceId);
   scoped.registrationRequests = user.id === "u1" ? database.registrationRequests : [];
-  scoped.rates = database.workspaceRates[workspaceId] || { USD:530, SAR:139.7, YER:1 };
-  const settings = database.workspaceSettings[workspaceId] || { baseCurrency:"YER", currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"} };
-  scoped.baseCurrency = settings.baseCurrency;
+  scoped.rates = database.workspaceRates[settingsId] || (settingsId === workspaceId ? database.workspaceRates[workspaceId] : null) || { USD:530, SAR:139.7, YER:1 };
+  const defaultCurrencies = user.role === "admin" ? ["YER","USD","SAR"] : ["USD"];
+  const settings = database.workspaceSettings[settingsId] || (settingsId === workspaceId ? database.workspaceSettings[workspaceId] : null) || { baseCurrency:defaultCurrencies[0], availableCurrencies:defaultCurrencies, currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"} };
+  scoped.availableCurrencies = settings.availableCurrencies || defaultCurrencies;
+  scoped.baseCurrency = scoped.availableCurrencies.includes(settings.baseCurrency) ? settings.baseCurrency : scoped.availableCurrencies[0];
   scoped.currencyNames = settings.currencyNames;
   scoped.dismissedNotificationIds = database.dismissedByWorkspace[workspaceId] || [];
   delete scoped.workspaceRates;
@@ -92,6 +95,7 @@ function scopedDatabase(database, user) {
 
 function mergeWorkspace(database, submitted, user) {
   const workspaceId = user.workspaceId || user.id;
+  const settingsId = user.id;
   for (const key of WORKSPACE_COLLECTIONS) {
     const preserved = database[key].filter(item => item.ownerId !== workspaceId);
     const owned = (submitted[key] || []).map(item => ({ ...item, ownerId:workspaceId }));
@@ -100,6 +104,7 @@ function mergeWorkspace(database, submitted, user) {
   if (user.id === "u1") {
     const submittedUsers = submitted.users || database.users;
     const submittedIds = new Set(submittedUsers.map(item => item.id));
+    const deletedUserIds = database.users.filter(item => !submittedIds.has(item.id)).map(item => item.id);
     const deletedWorkspaces = new Set(database.users.filter(item => item.id !== "u1" && item.workspaceId === item.id && !submittedIds.has(item.id)).map(item => item.workspaceId));
     database.users = submittedUsers.map(item => ({ ...item, workspaceId:item.workspaceId || "u1" }));
     if (deletedWorkspaces.size) {
@@ -110,6 +115,11 @@ function mergeWorkspace(database, submitted, user) {
         delete database.dismissedByWorkspace[id];
       }
     }
+    for (const id of deletedUserIds) {
+      delete database.workspaceRates[id];
+      delete database.workspaceSettings[id];
+      delete database.dismissedByWorkspace[id];
+    }
     database.registrationRequests = submitted.registrationRequests || database.registrationRequests;
   } else if (user.role === "admin") {
     const preservedUsers = database.users.filter(item => item.workspaceId !== workspaceId);
@@ -119,12 +129,13 @@ function mergeWorkspace(database, submitted, user) {
     const updatedSelf = (submitted.users || []).find(item => item.id === user.id);
     if (updatedSelf) Object.assign(user, { name:updatedSelf.name, username:updatedSelf.username, password:updatedSelf.password, workspaceId });
   }
-  database.workspaceRates[workspaceId] = submitted.rates || database.workspaceRates[workspaceId] || { USD:530, SAR:139.7, YER:1 };
-  database.workspaceSettings[workspaceId] = {
-    baseCurrency:submitted.baseCurrency || database.workspaceSettings[workspaceId]?.baseCurrency || "YER",
-    currencyNames:submitted.currencyNames || database.workspaceSettings[workspaceId]?.currencyNames || { YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي" }
+  database.workspaceRates[settingsId] = submitted.rates || database.workspaceRates[settingsId] || { USD:530, SAR:139.7, YER:1 };
+  database.workspaceSettings[settingsId] = {
+    baseCurrency:submitted.baseCurrency || database.workspaceSettings[settingsId]?.baseCurrency || (user.role === "admin" ? "YER" : "USD"),
+    availableCurrencies:submitted.availableCurrencies || database.workspaceSettings[settingsId]?.availableCurrencies || (user.role === "admin" ? ["YER","USD","SAR"] : ["USD"]),
+    currencyNames:submitted.currencyNames || database.workspaceSettings[settingsId]?.currencyNames || { YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي" }
   };
-  database.dismissedByWorkspace[workspaceId] = submitted.dismissedNotificationIds || [];
+  database.dismissedByWorkspace[settingsId] = submitted.dismissedNotificationIds || [];
   return database;
 }
 
