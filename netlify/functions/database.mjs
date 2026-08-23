@@ -45,7 +45,7 @@ function tokenUserId(request) {
 }
 
 function initialDatabase() {
-  return { users:[DEFAULT_ADMIN], subscriptions:[], debts:[], payables:[], notifications:[], activities:[], registrationRequests:[], rates:{USD:530,SAR:139.7,YER:1}, workspaceRates:{u1:{USD:530,SAR:139.7,YER:1}}, dismissedNotificationIds:[], dismissedByWorkspace:{u1:[]}, defaultDataRemoved:true };
+  return { users:[DEFAULT_ADMIN], subscriptions:[], debts:[], payables:[], notifications:[], activities:[], registrationRequests:[], rates:{USD:530,SAR:139.7,YER:1}, currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"}, baseCurrency:"YER", workspaceRates:{u1:{USD:530,SAR:139.7,YER:1}}, workspaceSettings:{u1:{baseCurrency:"YER",currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"}}}, dismissedNotificationIds:[], dismissedByWorkspace:{u1:[]}, defaultDataRemoved:true };
 }
 
 async function readDatabase() {
@@ -65,6 +65,9 @@ function normalizeDatabase(source) {
   }
   database.rates ||= { USD:530, SAR:139.7, YER:1 };
   database.workspaceRates ||= { u1:database.rates };
+  database.currencyNames ||= { YER:"ريال يمني", USD:"دولار أمريكي", SAR:"ريال سعودي" };
+  database.baseCurrency ||= "YER";
+  database.workspaceSettings ||= { u1:{ baseCurrency:database.baseCurrency, currencyNames:database.currencyNames } };
   database.dismissedNotificationIds ||= [];
   database.dismissedByWorkspace ||= { u1:database.dismissedNotificationIds };
   return database;
@@ -77,8 +80,12 @@ function scopedDatabase(database, user) {
   for (const key of WORKSPACE_COLLECTIONS) scoped[key] = database[key].filter(item => item.ownerId === workspaceId);
   scoped.registrationRequests = user.id === "u1" ? database.registrationRequests : [];
   scoped.rates = database.workspaceRates[workspaceId] || { USD:530, SAR:139.7, YER:1 };
+  const settings = database.workspaceSettings[workspaceId] || { baseCurrency:"YER", currencyNames:{YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي"} };
+  scoped.baseCurrency = settings.baseCurrency;
+  scoped.currencyNames = settings.currencyNames;
   scoped.dismissedNotificationIds = database.dismissedByWorkspace[workspaceId] || [];
   delete scoped.workspaceRates;
+  delete scoped.workspaceSettings;
   delete scoped.dismissedByWorkspace;
   return scoped;
 }
@@ -102,6 +109,10 @@ function mergeWorkspace(database, submitted, user) {
     if (updatedSelf) Object.assign(user, { name:updatedSelf.name, username:updatedSelf.username, password:updatedSelf.password, workspaceId });
   }
   database.workspaceRates[workspaceId] = submitted.rates || database.workspaceRates[workspaceId] || { USD:530, SAR:139.7, YER:1 };
+  database.workspaceSettings[workspaceId] = {
+    baseCurrency:submitted.baseCurrency || database.workspaceSettings[workspaceId]?.baseCurrency || "YER",
+    currencyNames:submitted.currencyNames || database.workspaceSettings[workspaceId]?.currencyNames || { YER:"ريال يمني",USD:"دولار أمريكي",SAR:"ريال سعودي" }
+  };
   database.dismissedByWorkspace[workspaceId] = submitted.dismissedNotificationIds || [];
   return database;
 }
