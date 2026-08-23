@@ -98,7 +98,18 @@ function mergeWorkspace(database, submitted, user) {
     database[key] = [...preserved, ...owned];
   }
   if (user.id === "u1") {
-    database.users = (submitted.users || database.users).map(item => ({ ...item, workspaceId:item.workspaceId || "u1" }));
+    const submittedUsers = submitted.users || database.users;
+    const submittedIds = new Set(submittedUsers.map(item => item.id));
+    const deletedWorkspaces = new Set(database.users.filter(item => item.id !== "u1" && item.workspaceId === item.id && !submittedIds.has(item.id)).map(item => item.workspaceId));
+    database.users = submittedUsers.map(item => ({ ...item, workspaceId:item.workspaceId || "u1" }));
+    if (deletedWorkspaces.size) {
+      for (const key of WORKSPACE_COLLECTIONS) database[key] = database[key].filter(item => !deletedWorkspaces.has(item.ownerId));
+      for (const id of deletedWorkspaces) {
+        delete database.workspaceRates[id];
+        delete database.workspaceSettings[id];
+        delete database.dismissedByWorkspace[id];
+      }
+    }
     database.registrationRequests = submitted.registrationRequests || database.registrationRequests;
   } else if (user.role === "admin") {
     const preservedUsers = database.users.filter(item => item.workspaceId !== workspaceId);
